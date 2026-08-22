@@ -1,0 +1,33 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# Data
+data/
+*.csv
+*.parquet
+
+# Spark
+spark-warehouse/
+metastore_db/
+
+# Airflow
+airflow/logs/
+
+# MinIO
+minio-data/
+
+# Elasticsearch
+elasticsearch-data/
