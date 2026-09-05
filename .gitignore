@@ -31,3 +31,4 @@ minio-data/
 
 # Elasticsearch
 elasticsearch-data/
+**/.ipynb_checkpoints/
