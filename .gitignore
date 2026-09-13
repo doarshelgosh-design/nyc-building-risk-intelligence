@@ -32,3 +32,6 @@ minio-data/
 # Elasticsearch
 elasticsearch-data/
 **/.ipynb_checkpoints/
+
+# Local exports
+exports/
