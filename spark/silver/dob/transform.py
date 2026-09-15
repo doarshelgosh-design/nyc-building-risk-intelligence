@@ -32,10 +32,10 @@ spark = create_spark_session(
 
 
 # ==================================================
-# 4. BRONZE INPUT
+# 4. BRONZE INPUT PATHS
 # ==================================================
 
-BRONZE_PATH = minio_path(
+BRONZE_BACKFILL_PATH = minio_path(
     "bronze/dob_violations/"
     "year=*/"
     "month=*/"
@@ -44,6 +44,20 @@ BRONZE_PATH = minio_path(
     "page_*.json"
 )
 
+BRONZE_DAILY_PATH = minio_path(
+    "bronze/dob_violations/"
+    "daily/"
+    "ingestion_year=*/"
+    "ingestion_month=*/"
+    "ingestion_day=*/"
+    "run=*/"
+    "page_*.json"
+)
+
+BRONZE_PATHS = [
+    BRONZE_BACKFILL_PATH,
+    BRONZE_DAILY_PATH,
+]
 
 # ==================================================
 # 5. SILVER OUTPUT
@@ -59,7 +73,13 @@ print("========================================")
 print("DOB BRONZE -> SILVER")
 print("========================================")
 
-print(f"Bronze path: {BRONZE_PATH}")
+print(
+    f"Backfill path: {BRONZE_BACKFILL_PATH}"
+)
+
+print(
+    f"Daily path: {BRONZE_DAILY_PATH}"
+)
 print(f"Silver path: {SILVER_PATH}")
 
 
@@ -70,7 +90,7 @@ print(f"Silver path: {SILVER_PATH}")
 bronze_df = (
     spark.read
     .option("multiline", "true")
-    .json(BRONZE_PATH)
+    .json(BRONZE_PATHS)
 )
 
 bronze_count = bronze_df.count()
