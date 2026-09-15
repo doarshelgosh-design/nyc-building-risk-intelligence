@@ -23,18 +23,57 @@ from minio_config import minio_path
 
 
 # ==================================================
-# 3. SNAPSHOT VERSION
-# ==================================================
-
-PLUTO_VERSION = "26v2"
-
-
-# ==================================================
-# 4. CREATE SPARK SESSION
+# 3. CREATE SPARK SESSION
 # ==================================================
 
 spark = create_spark_session(
     "NYC Building Risk - Silver PLUTO"
+)
+
+
+# ==================================================
+# 4. DISCOVER LATEST SUCCESSFUL SNAPSHOT
+# ==================================================
+
+SNAPSHOT_ROOT = minio_path(
+    "bronze/pluto/snapshots/"
+)
+
+hadoop_conf = spark._jsc.hadoopConfiguration()
+filesystem = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+    spark._jvm.java.net.URI.create(SNAPSHOT_ROOT),
+    hadoop_conf
+)
+
+success_pattern = spark._jvm.org.apache.hadoop.fs.Path(
+    SNAPSHOT_ROOT + "version=*/_SUCCESS"
+)
+
+success_files = filesystem.globStatus(
+    success_pattern
+)
+
+if not success_files:
+    raise RuntimeError(
+        "No successful PLUTO snapshot was found in Bronze."
+    )
+
+
+latest_success = max(
+    success_files,
+    key=lambda file_status: file_status.getModificationTime()
+)
+
+latest_success_path = (
+    latest_success
+    .getPath()
+    .toString()
+)
+
+PLUTO_VERSION = (
+    latest_success_path
+    .split("version=")[1]
+    .split("/")[0]
 )
 
 
@@ -61,7 +100,6 @@ SILVER_PATH = minio_path(
     f"silver/pluto/"
     f"version={PLUTO_VERSION}"
 )
-
 
 print()
 print("========================================")
