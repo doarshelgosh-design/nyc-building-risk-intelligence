@@ -33,13 +33,14 @@ spark = create_spark_session(
 
 
 # --------------------------------------------------
-# 4. Bronze input
+# 4. Bronze inputs
 #
-# Read only the production daily backfill structure.
-# This intentionally excludes old experimental files.
+# Read both:
+#   1. Historical backfill
+#   2. Daily Airflow ingestion
 # --------------------------------------------------
 
-BRONZE_PATH = minio_path(
+BRONZE_BACKFILL_PATH = minio_path(
     "bronze/311/"
     "year=*/"
     "month=*/"
@@ -47,6 +48,21 @@ BRONZE_PATH = minio_path(
     "backfill/"
     "page_*.json"
 )
+
+BRONZE_DAILY_PATH = minio_path(
+    "bronze/311/"
+    "year=*/"
+    "month=*/"
+    "day=*/"
+    "daily/"
+    "run=*/"
+    "page_*.json"
+)
+
+BRONZE_PATHS = [
+    BRONZE_BACKFILL_PATH,
+    BRONZE_DAILY_PATH,
+]
 
 
 # --------------------------------------------------
@@ -64,7 +80,11 @@ print("NYC 311 BRONZE -> SILVER")
 print("========================================")
 
 print(
-    f"Bronze path: {BRONZE_PATH}"
+    f"Backfill path: {BRONZE_BACKFILL_PATH}"
+)
+
+print(
+    f"Daily path: {BRONZE_DAILY_PATH}"
 )
 
 print(
@@ -83,7 +103,7 @@ bronze_df = (
         "true"
     )
     .json(
-        BRONZE_PATH
+        BRONZE_PATHS
     )
 )
 
