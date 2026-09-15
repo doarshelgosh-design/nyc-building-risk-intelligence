@@ -2,16 +2,16 @@ import os
 import time
 from datetime import datetime, timedelta
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
 from minio import Minio
-from minio.error import S3Error
 
 
-# --------------------------------------------------
-# 1. Load environment variables
-# --------------------------------------------------
+# ============================================================
+# 1. ENVIRONMENT
+# ============================================================
 
 load_dotenv()
 
@@ -21,13 +21,29 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET")
 
 MINIO_SECURE = (
-    os.getenv("MINIO_SECURE", "false").lower() == "true"
+    os.getenv(
+        "MINIO_SECURE",
+        "false"
+    ).lower()
+    == "true"
 )
 
+LOOKBACK_DAYS = int(
+    os.getenv(
+        "HPD_LOOKBACK_DAYS",
+        "7"
+    )
+)
 
-# --------------------------------------------------
-# 2. Validate environment variables
-# --------------------------------------------------
+PAGE_SIZE = int(
+    os.getenv(
+        "HPD_PAGE_SIZE",
+        "1000"
+    )
+)
+
+MAX_RETRIES = 3
+
 
 required_variables = {
     "MINIO_ENDPOINT": MINIO_ENDPOINT,
@@ -43,80 +59,76 @@ missing_variables = [
 ]
 
 if missing_variables:
-    raise ValueError(
+    raise RuntimeError(
         "Missing environment variables: "
         + ", ".join(missing_variables)
     )
 
 
-# --------------------------------------------------
-# 3. HPD Violations API configuration
-# --------------------------------------------------
+# ============================================================
+# 2. HPD API
+# ============================================================
 
 API_URL = (
     "https://data.cityofnewyork.us/"
     "resource/wvxf-dwi5.json"
 )
 
-# TEST RANGE
-#
-# Includes:
-# 2026-08-18
-# 2026-08-19
-#
-# END_DATE is NOT included.
-START_DATE = "2026-08-18"
-END_DATE = "2026-08-20"
+NYC_TZ = ZoneInfo(
+    "America/New_York"
+)
 
-PAGE_SIZE = 1000
+now_nyc = datetime.now(
+    NYC_TZ
+)
 
-MAX_RETRIES = 3
+run_timestamp = now_nyc.strftime(
+    "%Y%m%d_%H%M%S"
+)
 
 
-# --------------------------------------------------
-# 4. Connect to MinIO
-# --------------------------------------------------
+# Process 7 calendar days including today
+end_date = now_nyc.replace(
+    hour=0,
+    minute=0,
+    second=0,
+    microsecond=0,
+)
+
+start_date = (
+    end_date
+    - timedelta(
+        days=LOOKBACK_DAYS - 1
+    )
+)
+
+
+# ============================================================
+# 3. MINIO
+# ============================================================
 
 client = Minio(
     MINIO_ENDPOINT,
     access_key=MINIO_ACCESS_KEY,
     secret_key=MINIO_SECRET_KEY,
-    secure=MINIO_SECURE
+    secure=MINIO_SECURE,
 )
 
-
-# --------------------------------------------------
-# 5. Function: check if object exists
-# --------------------------------------------------
-
-def object_exists(
-    minio_client,
-    bucket_name,
-    object_name
+if not client.bucket_exists(
+    MINIO_BUCKET
 ):
-    try:
-
-        minio_client.stat_object(
-            bucket_name,
-            object_name
-        )
-
-        return True
-
-    except S3Error as error:
-
-        if error.code in (
-            "NoSuchKey",
-            "NoSuchObject"
-        ):
-            return False
-
-        raise
+    raise RuntimeError(
+        f"MinIO bucket does not exist: "
+        f"{MINIO_BUCKET}"
+    )
 
 
-# --------------------------------------------------
-# 6. Function: request one page from HPD API
-# --------------------------------------------------
+# ============================================================
+# 4. API REQUEST WITH RETRY
+# ============================================================
+
+session = requests.Session()
+
 
 def fetch_page(params):
 
@@ -127,10 +139,10 @@ def fetch_page(params):
 
         try:
 
-            response = requests.get(
+            response = session.get(
                 API_URL,
                 params=params,
-                timeout=60
+                timeout=60,
             )
 
             response.raise_for_status()
@@ -151,11 +163,12 @@ def fetch_page(params):
             if attempt == MAX_RETRIES:
                 raise
 
-            wait_seconds = attempt * 5
+            wait_seconds = (
+                attempt * 5
+            )
 
             print(
-                f"Waiting {wait_seconds} seconds "
-                "before retry..."
+                f"Waiting {wait_seconds} seconds..."
             )
 
             time.sleep(
@@ -163,89 +176,61 @@ def fetch_page(params):
             )
 
 
-# --------------------------------------------------
-# 7. Convert dates to Python datetime
-# --------------------------------------------------
+# ============================================================
+# 5. HEADER
+# ============================================================
 
-current_date = datetime.strptime(
-    START_DATE,
-    "%Y-%m-%d"
+print()
+print(
+    "========================================"
 )
 
-end_date = datetime.strptime(
-    END_DATE,
-    "%Y-%m-%d"
+print(
+    "HPD DAILY INGESTION"
+)
+
+print(
+    "========================================"
+)
+
+print(
+    f"Lookback days: {LOOKBACK_DAYS}"
+)
+
+print(
+    f"From date: {start_date.date()}"
+)
+
+print(
+    f"Through date: {end_date.date()}"
+)
+
+print(
+    f"Page size: {PAGE_SIZE}"
+)
+
+print(
+    f"Run: {run_timestamp}"
 )
 
 
-# --------------------------------------------------
-# 8. Global counters
-# --------------------------------------------------
+# ============================================================
+# 6. PROCESS EACH DAY
+# ============================================================
 
 grand_total_records = 0
 grand_total_pages = 0
+days_processed = 0
 
-completed_days = 0
-skipped_days = 0
+current_date = start_date
 
 
-# --------------------------------------------------
-# 9. Process one day at a time
-# --------------------------------------------------
-
-while current_date < end_date:
+while current_date <= end_date:
 
     next_date = (
         current_date
         + timedelta(days=1)
     )
-
-
-    # --------------------------------------------------
-    # 10. Build Bronze path
-    # --------------------------------------------------
-
-    base_path = (
-        "bronze/hpd_violations/"
-        f"year={current_date.year}/"
-        f"month={current_date.month:02d}/"
-        f"day={current_date.day:02d}/"
-        "backfill/"
-    )
-
-    success_marker = (
-        base_path
-        + "_SUCCESS"
-    )
-
-
-    # --------------------------------------------------
-    # 11. Skip already completed day
-    # --------------------------------------------------
-
-    if object_exists(
-        client,
-        MINIO_BUCKET,
-        success_marker
-    ):
-
-        print()
-
-        print(
-            f"Skipping {current_date.date()} "
-            "- already completed."
-        )
-
-        skipped_days += 1
-
-        current_date = next_date
-
-        continue
-
-
-    # --------------------------------------------------
-    # 12. Define current day's time range
-    # --------------------------------------------------
 
     day_start = current_date.strftime(
         "%Y-%m-%dT00:00:00.000"
@@ -256,36 +241,44 @@ while current_date < end_date:
     )
 
 
+    base_path = (
+        "bronze/hpd_violations/"
+        f"year={current_date.year}/"
+        f"month={current_date.month:02d}/"
+        f"day={current_date.day:02d}/"
+        "daily/"
+        f"run={run_timestamp}/"
+    )
+
+
     print()
-    print("==================================")
+    print(
+        "----------------------------------------"
+    )
 
     print(
         f"Processing date: "
         f"{current_date.date()}"
     )
 
-    print("==================================")
+    print(
+        "----------------------------------------"
+    )
 
-
-    # --------------------------------------------------
-    # 13. Reset daily pagination
-    # --------------------------------------------------
 
     offset = 0
     page_number = 1
     daily_total = 0
 
 
-    # --------------------------------------------------
-    # 14. Pagination inside current day
-    # --------------------------------------------------
+    # ========================================================
+    # 7. PAGINATION
+    # ========================================================
 
     while True:
 
         params = {
-
             "$limit": PAGE_SIZE,
-
             "$offset": offset,
 
             "$where": (
@@ -296,13 +289,15 @@ while current_date < end_date:
             "$order": (
                 "inspectiondate ASC, "
                 "violationid ASC"
-            )
+            ),
         }
 
 
-        # --------------------------------------------------
-        # 15. Request page from HPD API
-        # --------------------------------------------------
+        print(
+            f"Requesting page {page_number} "
+            f"(offset={offset})..."
+        )
+
 
         response = fetch_page(
             params
@@ -310,28 +305,20 @@ while current_date < end_date:
 
         data = response.json()
 
-
-        # --------------------------------------------------
-        # 16. No more data
-        # --------------------------------------------------
-
-        if not data:
-            break
-
-
         records_in_page = len(
             data
         )
 
+
         print(
-            f"Page {page_number}: "
-            f"{records_in_page} records"
+            f"Received "
+            f"{records_in_page:,} records."
         )
 
 
-        # --------------------------------------------------
-        # 17. Keep raw API response
-        # --------------------------------------------------
+        if records_in_page == 0:
+            break
+
 
         raw_json = (
             response.content
@@ -342,26 +329,18 @@ while current_date < end_date:
         )
 
 
-        # --------------------------------------------------
-        # 18. Build MinIO object name
-        # --------------------------------------------------
-
         object_name = (
-            base_path
-            + f"page_{page_number:05d}.json"
+            f"{base_path}"
+            f"page_{page_number:05d}.json"
         )
 
-
-        # --------------------------------------------------
-        # 19. Save raw JSON to Bronze
-        # --------------------------------------------------
 
         client.put_object(
             bucket_name=MINIO_BUCKET,
             object_name=object_name,
             data=json_stream,
             length=len(raw_json),
-            content_type="application/json"
+            content_type="application/json",
         )
 
 
@@ -369,10 +348,6 @@ while current_date < end_date:
             f"Saved: {object_name}"
         )
 
-
-        # --------------------------------------------------
-        # 20. Update counters
-        # --------------------------------------------------
 
         daily_total += (
             records_in_page
@@ -385,95 +360,81 @@ while current_date < end_date:
         grand_total_pages += 1
 
 
-        # --------------------------------------------------
-        # 21. Last page?
-        # --------------------------------------------------
-
         if records_in_page < PAGE_SIZE:
             break
 
 
-        # --------------------------------------------------
-        # 22. Move to next page
-        # --------------------------------------------------
-
         offset += PAGE_SIZE
-
         page_number += 1
 
 
-    # --------------------------------------------------
-    # 23. Create _SUCCESS marker
-    # --------------------------------------------------
+    # ========================================================
+    # 8. SUCCESS MARKER FOR THIS DAY/RUN
+    # ========================================================
 
-    success_stream = BytesIO(
-        b""
+    success_marker = (
+        f"{base_path}_SUCCESS"
     )
+
 
     client.put_object(
         bucket_name=MINIO_BUCKET,
         object_name=success_marker,
-        data=success_stream,
+        data=BytesIO(b""),
         length=0,
-        content_type="application/octet-stream"
+        content_type="application/octet-stream",
     )
 
-
-    completed_days += 1
-
-
-    print()
-
-    print(
-        f"SUCCESS marker created for "
-        f"{current_date.date()}"
-    )
 
     print(
         f"Date completed: "
         f"{current_date.date()} "
-        f"| Records: {daily_total}"
+        f"| Records: {daily_total:,}"
     )
 
 
-    # --------------------------------------------------
-    # 24. Move to next day
-    # --------------------------------------------------
+    days_processed += 1
 
     current_date = next_date
 
 
-# --------------------------------------------------
-# 25. Final summary
-# --------------------------------------------------
+# ============================================================
+# 9. FINAL RESULT
+# ============================================================
 
 print()
-print("==================================")
-
 print(
-    "HPD DAILY BACKFILL COMPLETED"
-)
-
-print("----------------------------------")
-
-print(
-    f"New records loaded: "
-    f"{grand_total_records}"
+    "========================================"
 )
 
 print(
-    f"New pages saved: "
-    f"{grand_total_pages}"
+    "HPD DAILY INGESTION COMPLETED"
 )
 
 print(
-    f"Days completed: "
-    f"{completed_days}"
+    "========================================"
 )
 
 print(
-    f"Days skipped: "
-    f"{skipped_days}"
+    f"Days processed: "
+    f"{days_processed}"
 )
 
-print("==================================")
+print(
+    f"Total records received: "
+    f"{grand_total_records:,}"
+)
+
+print(
+    f"Objects written: "
+    f"{grand_total_pages:,}"
+)
+
+print(
+    f"Run: "
+    f"{run_timestamp}"
+)
+
+print(
+    "========================================"
+)
