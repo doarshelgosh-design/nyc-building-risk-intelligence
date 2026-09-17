@@ -35,3 +35,7 @@ elasticsearch-data/
 
 # Local exports
 exports/
+
+# Temporary code dump files
+*_code.txt
+building_identity_part1.txt
